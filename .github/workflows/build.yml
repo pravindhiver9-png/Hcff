@@ -26,6 +26,9 @@ jobs:
       - name: Show Flutter version
         run: flutter --version
 
+      - name: Generate Android platform files
+        run: flutter create --platforms=android --org com.hamari_chitfund --project-name hamari_chit_fund_family .
+
       - name: Install dependencies
         run: flutter pub get
 
