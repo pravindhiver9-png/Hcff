@@ -15,6 +15,13 @@ class _UdharListScreenState extends State<UdharListScreen> {
   String filter = 'सभी'; // सभी | सक्रिय | पूर्ण जमा
   bool busy = false;
 
+  String _autoStatus(double principal, double principalPaid) {
+    if (principal > 0 && principalPaid >= principal) {
+      return 'पूर्ण जमा';
+    }
+    return 'सक्रिय';
+  }
+
   List<Loan> get rows {
     final l = s.loans
         .where((x) => filter == 'सभी' || x.status == filter)
@@ -44,7 +51,6 @@ class _UdharListScreenState extends State<UdharListScreen> {
     final pp = TextEditingController(text: l.principalPaid.toStringAsFixed(0));
     final note = TextEditingController(text: l.note);
     var date = l.date;
-    var status = l.status;
 
     final ok = await showDialog<bool>(
       context: context,
@@ -60,16 +66,6 @@ class _UdharListScreenState extends State<UdharListScreen> {
               DateField(label: 'दिनांक', value: date, onChanged: (d) => setLocal(() => date = d)),
               tf(ip, 'ब्याज जमा', number: true),
               tf(pp, 'मूलधन जमा', number: true),
-              DropdownButtonFormField<String>(
-                value: status,
-                decoration: const InputDecoration(labelText: 'स्थिति'),
-                items: const [
-                  DropdownMenuItem(value: 'सक्रिय', child: Text('सक्रिय')),
-                  DropdownMenuItem(value: 'पूर्ण जमा', child: Text('पूर्ण जमा')),
-                ],
-                onChanged: (v) => setLocal(() => status = v ?? status),
-              ),
-              const SizedBox(height: 10),
               tf(note, 'नोट'),
             ]),
           ),
@@ -82,20 +78,21 @@ class _UdharListScreenState extends State<UdharListScreen> {
     );
 
     if (ok == true) {
-      final newPrincipal = num0(pr.text);
+      final newPrincipal = num0(pr.text) > 0 ? num0(pr.text) : l.principal;
       final newInterest = num0(ip.text);
       final newPrincipalPaid = num0(pp.text);
+      final nextStatus = _autoStatus(newPrincipal, newPrincipalPaid);
 
       l.borrower = name.text.trim().isEmpty ? l.borrower : name.text.trim();
-      l.principal = newPrincipal > 0 ? newPrincipal : l.principal;
+      l.principal = newPrincipal;
       l.rate = num0(rate.text);
       l.date = date;
       l.interestPaid = newInterest;
       l.principalPaid = newPrincipalPaid;
-      l.status = status;
+      l.status = nextStatus;
       l.note = note.text.trim();
 
-      if (status == 'पूर्ण जमा') {
+      if (nextStatus == 'पूर्ण जमा') {
         l.repayDate ??= DateTime.now();
       } else {
         l.repayDate = null;
@@ -104,7 +101,7 @@ class _UdharListScreenState extends State<UdharListScreen> {
       await s.save();
       if (mounted) {
         setState(() {});
-        toast(context, 'एंट्री अपडेट हो गई');
+        toast(context, 'एंट्री अपडेट हो गई ($nextStatus)');
       }
     }
 
