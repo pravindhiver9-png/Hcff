@@ -1,35 +1,22 @@
-name: hamari_chit_fund
-description: हमारी चिट फंड फैमिली 2.0
+name: hamari_chit_fund_family
+description: हमारी चिट फण्ड फैमिली 2.0
 publish_to: 'none'
-version: 2.0.0+1
+version: 1.0.0+1
 
 environment:
-  sdk: '>=3.0.0 <4.0.0'
+  sdk: '>=3.3.0 <4.0.0'
 
 dependencies:
   flutter:
     sdk: flutter
-  shared_preferences: ^2.2.2
-  http: ^1.2.0
-  intl: any
-  pdf: ^3.10.8
-  printing: ^5.12.0
-  url_launcher: ^6.3.1
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  flutter_launcher_icons: ^0.14.3
-
-flutter_launcher_icons:
-  android: "launcher_icon"
-  ios: false
-  image_path: "assets/images/icon.png"
-  min_sdk_android: 21
-  adaptive_icon_background: "#FFFFFF"
-  adaptive_icon_foreground: "assets/images/icon.png"
+  flutter_lints: ^4.0.0
 
 flutter:
   uses-material-design: true
   assets:
-    - assets/images/
+    - assets/images/app_background.png
+    - assets/images/statement_pdf_background.png
