@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'app_colors.dart';
-import 'app_shadows.dart';
 
 class AppTheme {
   AppTheme._();
