@@ -27,17 +27,10 @@ jobs:
           flutter create --platforms=android --org com.hcff2 --project-name hamari_chit_fund /tmp/gen
           rm -rf android
           cp -r /tmp/gen/android ./android
-
-      - name: Fix Android compile SDK for printing
-        run: |
-          if [ -f android/app/build.gradle.kts ]; then
-            sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 35/' android/app/build.gradle.kts
-          elif [ -f android/app/build.gradle ]; then
-            sed -i 's/compileSdkVersion flutter.compileSdkVersion/compileSdkVersion 35/' android/app/build.gradle
-          else
-            echo "Android app Gradle file not found"
-            exit 1
-          fi
+          sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 34/' android/app/build.gradle
+          sed -i 's/compileSdkVersion flutter.compileSdkVersion/compileSdkVersion 34/' android/app/build.gradle
+          sed -i 's/targetSdk = flutter.targetSdkVersion/targetSdk = 34/' android/app/build.gradle
+          sed -i 's/targetSdkVersion flutter.targetSdkVersion/targetSdkVersion 34/' android/app/build.gradle
 
       - name: Internet permission and app label
         run: |
