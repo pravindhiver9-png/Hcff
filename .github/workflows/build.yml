@@ -28,6 +28,11 @@ jobs:
           rm -rf android
           cp -r /tmp/gen/android ./android
 
+      - name: Fix Android compile SDK for printing
+        run: |
+          sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 35/' android/app/build.gradle.kts
+          sed -i 's/compileSdkVersion flutter.compileSdkVersion/compileSdkVersion 35/' android/app/build.gradle
+
       - name: Internet permission and app label
         run: |
           M=android/app/src/main/AndroidManifest.xml
