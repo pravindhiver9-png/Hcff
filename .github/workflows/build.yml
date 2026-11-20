@@ -5,6 +5,9 @@ on:
     branches: [main, master]
   workflow_dispatch: {}
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -32,7 +35,6 @@ jobs:
           from pathlib import Path
           import re
 
-          # 1. App ki gradle files mein SDK 34
           for p in Path("android").rglob("build.gradle*"):
               txt = p.read_text(encoding="utf-8")
               txt = re.sub(r'compileSdk\s*=?\s*[^\n]+', 'compileSdk = 34', txt)
@@ -41,7 +43,6 @@ jobs:
               txt = re.sub(r'targetSdkVersion\s+[^\n]+', 'targetSdkVersion 34', txt)
               p.write_text(txt, encoding="utf-8")
 
-          # 2. Saare plugins (printing wagairah) ko bhi SDK 34 se build karao
           bg = Path("android/build.gradle")
           t = bg.read_text(encoding="utf-8")
           fix = (
@@ -63,7 +64,6 @@ jobs:
               t = fix + t
           bg.write_text(t, encoding="utf-8")
 
-          # 3. gradle.properties
           gradle_props = Path("android/gradle.properties")
           if gradle_props.exists():
               gtxt = gradle_props.read_text(encoding="utf-8")
@@ -73,3 +73,29 @@ jobs:
           EOF
 
           echo "----- android/build.gradle -----"
+          cat android/build.gradle
+
+      - name: Internet permission and app label
+        run: |
+          M=android/app/src/main/AndroidManifest.xml
+          grep -q 'android.permission.INTERNET' $M || sed -i 's|<application|<uses-permission android:name="android.permission.INTERNET"/>\n    <application|' $M
+          sed -i 's|android:label="[^"]*"|android:label="चिट फंड फैमिली 2.0"|' $M
+
+      - run: flutter pub get
+      - run: flutter build apk --release
+
+      - name: Check APK file
+        run: ls -lh build/app/outputs/flutter-apk/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hamari-chit-fund-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: APK build ${{ github.run_number }}
+          files: build/app/outputs/flutter-apk/app-release.apk
