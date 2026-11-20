@@ -22,15 +22,33 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Generate Android platform files
+      - name: Generate Android platform files and set SDK 34
         run: |
           flutter create --platforms=android --org com.hcff2 --project-name hamari_chit_fund /tmp/gen
           rm -rf android
           cp -r /tmp/gen/android ./android
-          sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 34/' android/app/build.gradle
-          sed -i 's/compileSdkVersion flutter.compileSdkVersion/compileSdkVersion 34/' android/app/build.gradle
-          sed -i 's/targetSdk = flutter.targetSdkVersion/targetSdk = 34/' android/app/build.gradle
-          sed -i 's/targetSdkVersion flutter.targetSdkVersion/targetSdkVersion 34/' android/app/build.gradle
+
+          python3 - <<'EOF'
+          from pathlib import Path
+          import re
+
+          for p in Path("android").rglob("build.gradle*"):
+              txt = p.read_text(encoding="utf-8")
+              txt = re.sub(r'compileSdk\s*=?\s*[^\n]+', 'compileSdk = 34', txt)
+              txt = re.sub(r'compileSdkVersion\s+[^\n]+', 'compileSdkVersion 34', txt)
+              txt = re.sub(r'targetSdk\s*=?\s*[^\n]+', 'targetSdk = 34', txt)
+              txt = re.sub(r'targetSdkVersion\s+[^\n]+', 'targetSdkVersion 34', txt)
+              p.write_text(txt, encoding="utf-8")
+
+          gradle_props = Path("android/gradle.properties")
+          if gradle_props.exists():
+              gtxt = gradle_props.read_text(encoding="utf-8")
+              if "android.suppressUnsupportedCompileSdk" not in gtxt:
+                  gtxt += "\nandroid.suppressUnsupportedCompileSdk=34\n"
+              gradle_props.write_text(gtxt, encoding="utf-8")
+          EOF
+
+          grep -rn "compileSdk" android/ || true
 
       - name: Internet permission and app label
         run: |
