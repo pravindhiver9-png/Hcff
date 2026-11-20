@@ -15,21 +15,17 @@ class _PaisaVitranScreenState extends State<PaisaVitranScreen> {
   final total = TextEditingController();
   DateTime date = DateTime.now();
 
-  // हर सदस्य के लिए वितरण राशि कंट्रोलर
   final Map<String, TextEditingController> _shareCtrls = {};
-  // जिन सदस्यों के सक्रिय उधार का पैनल खुला है
   final Set<String> _expandedMembers = {};
-  // हर सक्रिय उधार (loan.id) के लिए मैनुअल इनपुट कंट्रोलर्स
   final Map<String, TextEditingController> _finalIntCtrls = {};
   final Map<String, TextEditingController> _intPaidCtrls = {};
   final Map<String, TextEditingController> _priPaidCtrls = {};
-  // जिन लोन को चेक/चुक्ता किया जा रहा है
   final Set<String> _selectedLoanIds = {};
 
   TextEditingController _shareCtrl(String memberId) =>
       _shareCtrls.putIfAbsent(memberId, () => TextEditingController());
 
-  TextEditingController _fIntCtrl(String loanId, Loan l) =>
+  TextEditingController _fIntCtrl(String loanId) =>
       _finalIntCtrls.putIfAbsent(loanId, () => TextEditingController());
 
   TextEditingController _iPaidCtrl(String loanId) =>
@@ -76,7 +72,6 @@ class _PaisaVitranScreenState extends State<PaisaVitranScreen> {
     return iPaid + pPaid;
   }
 
-  /// किसी सदस्य के चयनित उधारों में कुल कितनी जमा राशि लग रही है
   double _memberLoansSettledAmount(String memberId) {
     double sum = 0;
     for (final l in _activeLoansForMember(memberId)) {
@@ -87,7 +82,6 @@ class _PaisaVitranScreenState extends State<PaisaVitranScreen> {
     return sum;
   }
 
-  /// वितरण राशि डालते ही सभी सदस्यों में बराबर राशि बाँटना
   void _distributeEquallyFromTotal(String rawTotal) {
     final t = num0(rawTotal);
     if (s.members.isEmpty) return;
@@ -104,15 +98,14 @@ class _PaisaVitranScreenState extends State<PaisaVitranScreen> {
 
     for (var i = 0; i < s.members.length; i++) {
       final m = s.members[i];
-      // यदि सदस्य के उधार चुक्ता होने के बाद बची हुई राशि है तो उस हिसाब से समायोजित करें
       final extra = (i == 0 && remainder > 0) ? remainder : 0.0;
       final val = each + extra;
-      _shareCtrl(m.id).text = val == val.roundToDouble() ? val.toStringAsFixed(0) : val.toStringAsFixed(2);
+      _shareCtrl(m.id).text =
+          val == val.roundToDouble() ? val.toStringAsFixed(0) : val.toStringAsFixed(2);
     }
     setState(() {});
   }
 
-  /// उधार चुक्ता होते ही सदस्य के वितरण राशि बॉक्स में बची हुई राशि ऑटो अपडेट करना
   void _recalculateRemainingShareForMember(String memberId, double baseShare) {
     final settled = _memberLoansSettledAmount(memberId);
     final remaining = (baseShare - settled) < 0 ? 0.0 : (baseShare - settled);
@@ -130,7 +123,6 @@ class _PaisaVitranScreenState extends State<PaisaVitranScreen> {
       for (final m in s.members) m: num0(_shareCtrl(m.id).text)
     }..removeWhere((_, v) => v <= 0);
 
-    // यदि किसी सदस्य ने सिर्फ़ उधार चुक्ता की राशि भरी है और वितरण बॉक्स 0/खाली है
     for (final m in s.members) {
       final settled = _memberLoansSettledAmount(m.id);
       if (settled > 0 && !shares.containsKey(m)) {
@@ -160,11 +152,11 @@ class _PaisaVitranScreenState extends State<PaisaVitranScreen> {
     shares.forEach((m, share) {
       double memberSettledTotal = 0;
 
-      // 1. यदि सदस्य के उधार चुने गए हैं और राशि डाली गई है तो उन्हें चुक्ता करें
       for (final l in _activeLoansForMember(m.id)) {
         if (_selectedLoanIds.contains(l.id)) {
           final iPaid = num0(_iPaidCtrl(l.id).text);
           final pPaid = num0(_pPaidCtrl(l.id).text);
+          final fInt = num0(_fIntCtrl(l.id).text);
           if (iPaid > 0 || pPaid > 0) {
             final isFull = pPaid >= l.principal - 0.5;
             s.repay(
@@ -173,15 +165,17 @@ class _PaisaVitranScreenState extends State<PaisaVitranScreen> {
               pPaid,
               date,
               isFull ? 1 : 2,
-              extra: '(वितरण से चुक्ता)',
+              extra: fInt > 0
+                  ? '(वितरण से चुक्ता • अंतिम ब्याज ${rs(fInt)})'
+                  : '(वितरण से चुक्ता)',
             );
             memberSettledTotal += (iPaid + pPaid);
           }
         }
       }
 
-      // 2. यदि कोई अतिरिक्त राशि बची है और प्लान से समायोजन होना है
-      final remainingForPlan = (share - memberSettledTotal) < 0 ? 0.0 : (share - memberSettledTotal);
+      final remainingForPlan =
+          (share - memberSettledTotal) < 0 ? 0.0 : (share - memberSettledTotal);
       if (remainingForPlan > 0) {
         final plans = s.fe.planSettlement(m.id, remainingForPlan, date);
         for (final p in plans) {
@@ -206,6 +200,7 @@ class _PaisaVitranScreenState extends State<PaisaVitranScreen> {
           share: share,
           loanSettled: memberSettledTotal,
           date: date,
+          note: memberSettledTotal > 0 ? 'उधार समायोजन सहित' : '',
         ),
       );
     });
@@ -248,15 +243,35 @@ class _PaisaVitranScreenState extends State<PaisaVitranScreen> {
         children: [
           Row(
             children: [
-              Expanded(child: Text('दिनांक: ${dt(l.date)}', style: const TextStyle(fontWeight: FontWeight.bold, color: C.text))),
-              Expanded(child: Text('मूलधन: ${rs(l.principal)}', style: const TextStyle(fontWeight: FontWeight.bold, color: C.text))),
+              Expanded(
+                child: Text(
+                  'दिनांक: ${dt(l.date)}',
+                  style: const TextStyle(fontWeight: FontWeight.bold, color: C.text),
+                ),
+              ),
+              Expanded(
+                child: Text(
+                  'मूलधन: ${rs(l.principal)}',
+                  style: const TextStyle(fontWeight: FontWeight.bold, color: C.text),
+                ),
+              ),
             ],
           ),
           const SizedBox(height: 6),
           Row(
             children: [
-              Expanded(child: Text('अवधि: ${_periodText(l)}', style: const TextStyle(color: C.text2, fontWeight: FontWeight.w600))),
-              Expanded(child: Text('संभावित ब्याज: ${rs(estInt)}', style: const TextStyle(color: C.primary, fontWeight: FontWeight.bold))),
+              Expanded(
+                child: Text(
+                  'अवधि: ${_periodText(l)}',
+                  style: const TextStyle(color: C.text2, fontWeight: FontWeight.w600),
+                ),
+              ),
+              Expanded(
+                child: Text(
+                  'संभावित ब्याज: ${rs(estInt)}',
+                  style: const TextStyle(color: C.primary, fontWeight: FontWeight.bold),
+                ),
+              ),
             ],
           ),
         ],
@@ -365,8 +380,6 @@ class _PaisaVitranScreenState extends State<PaisaVitranScreen> {
                                 number: true,
                                 onChanged: (_) => setState(() {}),
                               ),
-
-                              // चेकबॉक्स टिक करते ही सदस्य के सभी सक्रिय उधार दिखाना
                               if (hasActiveLoan && isChecked) ...[
                                 for (final l in activeLoans) ...[
                                   Builder(
@@ -421,7 +434,7 @@ class _PaisaVitranScreenState extends State<PaisaVitranScreen> {
                                             ),
                                             _highlightedInfoBox(l),
                                             tf(
-                                              _fIntCtrl(l.id, l),
+                                              _fIntCtrl(l.id),
                                               'अंतिम ब्याज (₹)',
                                               number: true,
                                               onChanged: (_) => setState(() {}),
