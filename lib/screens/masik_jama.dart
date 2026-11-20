@@ -1,40 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../models/app_models.dart';
+import '../services/finance_engine.dart';
 import '../services/store.dart';
 import '../ui.dart';
-
-class _MonthKey {
-  final int year;
-  final int month;
-  const _MonthKey(this.year, this.month);
-
-  DateTime toDate() => DateTime(year, month, 1);
-
-  String label() {
-    const mNames = [
-      'जनवरी', 'फरवरी', 'मार्च', 'अप्रैल', 'मई', 'जून',
-      'जुलाई', 'अगस्त', 'सितंबर', 'अक्टूबर', 'नवंबर', 'दिसंबर'
-    ];
-    return '${mNames[month - 1]} $year';
-  }
-
-  String shortLabel() {
-    const mNames = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
-    ];
-    return '${mNames[month - 1]} $year';
-  }
-
-  @override
-  bool operator ==(Object other) =>
-      other is _MonthKey && other.year == year && other.month == month;
-
-  @override
-  int get hashCode => Object.hash(year, month);
-}
 
 class MasikJamaScreen extends StatefulWidget {
   const MasikJamaScreen({super.key});
@@ -44,29 +15,25 @@ class MasikJamaScreen extends StatefulWidget {
 
 class _MasikJamaScreenState extends State<MasikJamaScreen> {
   final s = Store.I;
-
   DateTime jamaDate = DateTime.now();
-  String? editingEntryId;
 
-  // Har member ke liye selected months (Set<_MonthKey>) aur advance amount controller
-  final Map<String, Set<_MonthKey>> _selectedMonths = {};
+  // हर सदस्य के लिए चुने गए महीने (monthKey) और एडवांस राशि कंट्रोलर
+  final Map<String, Set<String>> _selectedMonthKeys = {};
   final Map<String, TextEditingController> _advanceCtrls = {};
 
   String _lastWhatsappMsg = '';
 
-  double get _fee => s.monthlyFee > 0 ? s.monthlyFee : 200.0;
-
-  _MonthKey get _currentMonthKey => _MonthKey(jamaDate.year, jamaDate.month);
+  double get _perMonth => s.monthlyAmount > 0 ? s.monthlyAmount : 200.0;
 
   @override
   void initState() {
     super.initState();
-    _initMemberControllers();
+    _syncControllers();
   }
 
-  void _initMemberControllers() {
+  void _syncControllers() {
     for (final m in s.members) {
-      _selectedMonths.putIfAbsent(m.id, () => <_MonthKey>{});
+      _selectedMonthKeys.putIfAbsent(m.id, () => <String>{});
       _advanceCtrls.putIfAbsent(m.id, () => TextEditingController());
     }
   }
@@ -79,138 +46,138 @@ class _MasikJamaScreenState extends State<MasikJamaScreen> {
     super.dispose();
   }
 
+  String _label(String key) {
+    final p = key.split('-');
+    return DateFormat('MMM yyyy').format(DateTime(int.parse(p[0]), int.parse(p[1]), 1));
+  }
+
   String _fmtDate(DateTime d) =>
       '${d.day.toString().padLeft(2, '0')}/${d.month.toString().padLeft(2, '0')}/${d.year}';
 
-  /// Member ke abhi tak ke total masik jama ke aadhar par kaun-kaun se mahine
-  /// pichhle bakaya ya current mahine mein pending hain, ye nikalta hai.
-  /// Rule: Jiska pichhle month ya kisi bhi pichhle month ka bakaya nahi hai,
-  /// uske pichhle bakaya months ka checkbox nahi aayega.
-  List<_MonthKey> _pendingMonthKeysForMember(String memberId) {
-    final cur = _currentMonthKey;
-    double totalPaid = 0;
-    DateTime? earliestDate;
+  /// केवल पिछले बकाया महीने (यदि कोई बकाया है) और वर्तमान महीना लौटाता है।
+  /// जिस सदस्य का पिछले किसी भी महीने का बकाया नहीं है, उसके पिछले महीनों का चेकबॉक्स नहीं आएगा।
+  List<String> _applicableMonthKeys(Member m) {
+    final paid = s.fe.paidMonths(m.id);
+    final curMonthStart = DateTime(jamaDate.year, jamaDate.month, 1);
+    final curKey = FinanceEngine.monthKey(curMonthStart);
 
-    for (final d in s.deposits) {
-      if (d.memberId == memberId) {
-        totalPaid += d.amount;
-        final md = DateTime(d.monthDate.year, d.monthDate.month, 1);
-        if (earliestDate == null || md.isBefore(earliestDate)) {
-          earliestDate = md;
+    // सदस्य की सबसे पुरानी जमा/जुड़ने की तारीख़ या वर्तमान माह से शुरुआत
+    DateTime start = m.joinDate;
+    for (final j in s.jama) {
+      if (j.memberId == m.id) {
+        final parts = j.month.split('-');
+        if (parts.length == 2) {
+          final jd = DateTime(int.parse(parts[0]), int.parse(parts[1]), 1);
+          if (jd.isBefore(start)) start = jd;
         }
       }
     }
+    start = DateTime(start.year, start.month, 1);
 
-    // Start month: agar pehle koi deposit record hai to us month se, warna current month se
-    final start = earliestDate ?? DateTime(cur.year, cur.month, 1);
-    final end = DateTime(cur.year, cur.month, 1);
+    final keys = <String>[];
+    var cursor = start;
+    while (!cursor.isAfter(curMonthStart)) {
+      final k = FinanceEngine.monthKey(cursor);
+      final isPast = cursor.isBefore(curMonthStart);
 
-    // Total months from start to current month inclusive
-    final totalMonthsSpan =
-        (end.year - start.year) * 12 + (end.month - start.month) + 1;
-    final safeSpan = totalMonthsSpan < 1 ? 1 : totalMonthsSpan;
-
-    final paidMonthsCount = (totalPaid / _fee).floor();
-
-    final result = <_MonthKey>[];
-    for (int i = 0; i < safeSpan; i++) {
-      final dt = DateTime(start.year, start.month + i, 1);
-      final key = _MonthKey(dt.year, dt.month);
-      final isPast = dt.isBefore(end);
-
-      // Agar mahina pehle hi pure fee se paid ho chuka hai to skip karein
-      if (i < paidMonthsCount) continue;
-
-      // Agar pichhla mahina hai aur bakaya nahi hai to nahi aayega;
-      // bakaya hai to aayega, aur current mahina hamesha aayega
-      if (isPast || key == cur) {
-        result.add(key);
+      if (isPast) {
+        // केवल वही पिछला महीना जो अभी तक जमा (paid) नहीं हुआ है
+        if (!paid.contains(k)) {
+          keys.add(k);
+        }
+      } else {
+        // वर्तमान महीना
+        keys.add(k);
       }
+      cursor = FinanceEngine.addMonths(cursor, 1);
     }
 
-    if (result.isEmpty) {
-      result.add(cur);
+    if (!keys.contains(curKey)) {
+      keys.add(curKey);
     }
-    return result;
+    return keys;
   }
 
-  /// Advance amount se kitne next months auto paid honge
-  List<_MonthKey> _autoNextMonthsFromAdvance(String memberId, double advAmt) {
-    if (advAmt < _fee) return const [];
-    final count = (advAmt / _fee).floor();
+  /// एडवांस राशि से कितने अगले महीने स्वतः पेड होंगे
+  List<String> _autoAdvanceMonths(String memberId, double advAmt) {
+    if (advAmt <= 0) return const [];
+    var n = (advAmt / _perMonth).floor();
+    if (n < 1) n = 1;
 
-    // Unpaid months ke baad agle mahino se auto-paid
-    final pending = _pendingMonthKeysForMember(memberId);
-    final selected = _selectedMonths[memberId] ?? <_MonthKey>{};
+    final paid = s.fe.paidMonths(memberId);
+    final selected = _selectedMonthKeys[memberId] ?? <String>{};
+    paid.addAll(selected);
 
-    _MonthKey anchor = _currentMonthKey;
-    final combined = <_MonthKey>{...pending, ...selected};
-    if (combined.isNotEmpty) {
-      final sorted = combined.toList()
-        ..sort((a, b) => a.toDate().compareTo(b.toDate()));
-      anchor = sorted.last;
+    var cur = DateTime(jamaDate.year, jamaDate.month, 1);
+    // यदि वर्तमान माह भी पहले से पेड/चयनित है तो अगले माह से शुरू करें
+    while (paid.contains(FinanceEngine.monthKey(cur))) {
+      cur = FinanceEngine.addMonths(cur, 1);
     }
 
-    final list = <_MonthKey>[];
-    for (int i = 1; i <= count; i++) {
-      final dt = DateTime(anchor.year, anchor.month + i, 1);
-      list.add(_MonthKey(dt.year, dt.month));
+    final months = <String>[];
+    for (var k = 0; k < n; k++) {
+      while (paid.contains(FinanceEngine.monthKey(cur))) {
+        cur = FinanceEngine.addMonths(cur, 1);
+      }
+      final mk = FinanceEngine.monthKey(cur);
+      months.add(mk);
+      paid.add(mk);
+      cur = FinanceEngine.addMonths(cur, 1);
     }
-    return list;
+    return months;
   }
 
-  double _memberTotalPaidForRow(Member m) {
-    final selCount = (_selectedMonths[m.id]?.length ?? 0);
+  double _memberSelectedTotal(Member m) {
+    final selCount = _selectedMonthKeys[m.id]?.length ?? 0;
     final adv = num0(_advanceCtrls[m.id]?.text ?? '');
-    return (selCount * _fee) + adv;
+    return (selCount * _perMonth) + adv;
   }
 
-  String _buildWhatsappText() {
+  String _formatRsClean(double v) =>
+      v == v.roundToDouble() ? '₹${v.toInt()}' : '₹${v.toStringAsFixed(2)}';
+
+  String _buildWhatsappMessage() {
     final lines = <String>[
       'दिनांक ${_fmtDate(jamaDate)}',
       '',
     ];
 
     for (final m in s.members) {
-      final selCount = _selectedMonths[m.id]?.length ?? 0;
-      final adv = num0(_advanceCtrls[m.id]?.text ?? '');
-      final totalForMember = (selCount * _fee) + adv;
-
-      if (totalForMember > 0) {
-        final advNote = adv > 0 ? ' (एडवांस ₹${adv.toStringAsFixed(0)})' : '';
-        lines.add('${m.name} ₹${totalForMember.toStringAsFixed(0)} जमा$advNote');
+      final total = _memberSelectedTotal(m);
+      if (total > 0) {
+        lines.add('${m.name} ${_formatRsClean(total)} जमा');
       }
     }
 
     return lines.join('\n').trim();
   }
 
-  Future<void> _openWhatsapp(String text) async {
-    if (text.trim().isEmpty) return toast(context, 'मैसेज खाली है');
-    final encoded = Uri.encodeComponent(text);
+  Future<void> _openWhatsapp(String msg) async {
+    if (msg.trim().isEmpty) return toast(context, 'मैसेज खाली है');
+    final encoded = Uri.encodeComponent(msg);
     final uri = Uri.parse('https://wa.me/?text=$encoded');
     try {
       final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
       if (!ok && mounted) {
-        await Clipboard.setData(ClipboardData(text: text));
+        await Clipboard.setData(ClipboardData(text: msg));
         toast(context, 'WhatsApp नहीं खुल सका — मैसेज कॉपी हो गया');
       }
     } catch (_) {
-      await Clipboard.setData(ClipboardData(text: text));
+      await Clipboard.setData(ClipboardData(text: msg));
       if (mounted) toast(context, 'मैसेज कॉपी कर लिया गया है');
     }
   }
 
-  Future<void> _showWhatsappDialog(String text) async {
+  Future<void> _showWhatsappDialog(String msg) async {
     await showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('WhatsApp मैसेज'),
-        content: SingleChildScrollView(child: SelectableText(text)),
+        content: SingleChildScrollView(child: SelectableText(msg)),
         actions: [
           TextButton(
             onPressed: () async {
-              await Clipboard.setData(ClipboardData(text: text));
+              await Clipboard.setData(ClipboardData(text: msg));
               if (ctx.mounted) Navigator.pop(ctx);
               if (mounted) toast(context, 'मैसेज कॉपी हो गया');
             },
@@ -219,7 +186,7 @@ class _MasikJamaScreenState extends State<MasikJamaScreen> {
           ElevatedButton.icon(
             onPressed: () async {
               Navigator.pop(ctx);
-              await _openWhatsapp(text);
+              await _openWhatsapp(msg);
             },
             icon: const Icon(Icons.send, size: 18),
             label: const Text('WhatsApp भेजें'),
@@ -229,75 +196,70 @@ class _MasikJamaScreenState extends State<MasikJamaScreen> {
     );
   }
 
-  Future<void> _pickJamaDate() async {
-    final picked = await showDatePicker(
-      context: context,
-      initialDate: jamaDate,
-      firstDate: DateTime(2020),
-      lastDate: DateTime(2100),
-    );
-    if (picked != null) {
-      setState(() => jamaDate = picked);
-    }
-  }
-
   Future<void> _saveAll() async {
-    _initMemberControllers();
-    bool anySaved = false;
+    _syncControllers();
+    final msg = _buildWhatsappMessage();
+    bool savedAny = false;
 
     for (final m in s.members) {
-      final selSet = _selectedMonths[m.id] ?? <_MonthKey>{};
+      final selSet = _selectedMonthKeys[m.id] ?? <String>{};
       final adv = num0(_advanceCtrls[m.id]?.text ?? '');
+      final paid = s.fe.paidMonths(m.id);
 
-      // Selected months ke liye entries
+      // 1. चुने गए बकाया / वर्तमान महीनों के लिए एंट्री
       for (final mk in selSet) {
-        s.deposits.add(
-          MonthlyDeposit(
-            id: s.newId(),
-            memberId: m.id,
-            monthDate: mk.toDate(),
-            date: jamaDate,
-            amount: _fee,
-            note: 'मासिक जमा (${mk.shortLabel()})',
-          ),
-        );
-        anySaved = true;
+        s.jama.add(MasikJama(
+          id: s.newId(),
+          memberId: m.id,
+          month: mk,
+          amount: _perMonth,
+          date: jamaDate,
+        ));
+        paid.add(mk);
+        savedAny = true;
       }
 
-      // Advance amount ke liye entry + next months auto-paid note
+      // 2. एडवांस राशि से अगले महीनों में स्वतः जमा[span_6](start_span)[span_6](end_span)
       if (adv > 0) {
-        final nextAuto = _autoNextMonthsFromAdvance(m.id, adv);
-        final autoText = nextAuto.isEmpty
-            ? 'एडवांस जमा'
-            : 'एडवांस जमा — स्वतः अगले माह पेड: ${nextAuto.map((e) => e.shortLabel()).join(', ')}';
-
-        s.deposits.add(
-          MonthlyDeposit(
+        var n = (adv / _perMonth).floor();
+        if (n < 1) n = 1;
+        var cur = DateTime(jamaDate.year, jamaDate.month, 1);
+        while (paid.contains(FinanceEngine.monthKey(cur))) {
+          cur = FinanceEngine.addMonths(cur, 1);
+        }
+        var left = adv;
+        for (var k = 0; k < n; k++) {
+          while (paid.contains(FinanceEngine.monthKey(cur))) {
+            cur = FinanceEngine.addMonths(cur, 1);
+          }
+          final a = (k == n - 1) ? left : _perMonth;
+          final mk = FinanceEngine.monthKey(cur);
+          s.jama.add(MasikJama(
             id: s.newId(),
             memberId: m.id,
-            monthDate: _currentMonthKey.toDate(),
+            month: mk,
+            amount: a,
             date: jamaDate,
-            amount: adv,
-            note: autoText,
-          ),
-        );
-        anySaved = true;
+          ));
+          paid.add(mk);
+          left -= a;
+          cur = FinanceEngine.addMonths(cur, 1);
+          savedAny = true;
+        }
       }
     }
 
-    if (!anySaved) {
+    if (!savedAny) {
       return toast(context, 'कम से कम एक सदस्य का महीना या एडवांस राशि भरें');
     }
 
-    final msg = _buildWhatsappText();
     await s.save();
     if (!mounted) return;
 
     toast(context, 'मासिक जमा सेव हो गई');
     setState(() {
       _lastWhatsappMsg = msg;
-      editingEntryId = null;
-      for (final set in _selectedMonths.values) {
+      for (final set in _selectedMonthKeys.values) {
         set.clear();
       }
       for (final c in _advanceCtrls.values) {
@@ -308,33 +270,34 @@ class _MasikJamaScreenState extends State<MasikJamaScreen> {
     await _showWhatsappDialog(msg);
   }
 
-  Future<void> _editDepositEntry(MonthlyDeposit entry) async {
-    final amtCtrl = TextEditingController(text: entry.amount.toStringAsFixed(0));
-    final noteCtrl = TextEditingController(text: entry.note);
-    var dDate = entry.date;
-    var mDate = entry.monthDate;
+  Future<void> _editJama(MasikJama j) async {
+    final amtCtrl = TextEditingController(text: j.amount.toStringAsFixed(0));
+    var dDate = j.date;
+    final parts = j.month.split('-');
+    var mDate = parts.length == 2
+        ? DateTime(int.parse(parts[0]), int.parse(parts[1]), 1)
+        : DateTime(jamaDate.year, jamaDate.month, 1);
 
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setLocal) => AlertDialog(
-          title: Text('${s.memberById(entry.memberId)?.name ?? 'सदस्य'} — एंट्री बदलें'),
+          title: Text('${s.memberById(j.memberId)?.name ?? 'सदस्य'} — जमा बदलें'),
           content: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
                 tf(amtCtrl, 'राशि (₹)', number: true),
                 DateField(
-                  label: 'माह तारीख',
+                  label: 'माह (कोई भी तारीख़ चुनें)',
                   value: mDate,
-                  onChanged: (d) => setLocal(() => mDate = d),
+                  onChanged: (d) => setLocal(() => mDate = DateTime(d.year, d.month, 1)),
                 ),
                 DateField(
                   label: 'जमा दिनांक',
                   value: dDate,
                   onChanged: (d) => setLocal(() => dDate = d),
                 ),
-                tf(noteCtrl, 'नोट'),
               ],
             ),
           ),
@@ -348,40 +311,24 @@ class _MasikJamaScreenState extends State<MasikJamaScreen> {
 
     if (ok == true) {
       final newAmt = num0(amtCtrl.text);
-      if (newAmt > 0) {
-        entry.amount = newAmt;
-      }
-      entry.monthDate = mDate;
-      entry.date = dDate;
-      entry.note = noteCtrl.text.trim();
+      if (newAmt > 0) j.amount = newAmt;
+      j.month = FinanceEngine.monthKey(mDate);
+      j.date = dDate;
       await s.save();
       if (mounted) {
         setState(() {});
-        toast(context, 'एंट्री अपडेट हो गई');
+        toast(context, 'जमा एंट्री अपडेट हो गई');
       }
     }
 
     amtCtrl.dispose();
-    noteCtrl.dispose();
-  }
-
-  Future<void> _deleteDepositEntry(MonthlyDeposit entry) async {
-    final mName = s.memberById(entry.memberId)?.name ?? 'सदस्य';
-    if (!await confirm(context, '$mName (${rs(entry.amount)}) की एंट्री हटाएँ?')) return;
-    s.deposits.remove(entry);
-    await s.save();
-    if (mounted) {
-      setState(() {});
-      toast(context, 'एंट्री हटा दी गई');
-    }
   }
 
   @override
   Widget build(BuildContext context) {
-    _initMemberControllers();
-
-    final depositsList = List<MonthlyDeposit>.from(s.deposits)
-      ..sort((a, b) => b.date.compareTo(a.date));
+    _syncControllers();
+    final fe = s.fe;
+    final recent = [...s.jama]..sort((a, b) => b.date.compareTo(a.date));
 
     return Scaffold(
       appBar: AppBar(
@@ -390,7 +337,7 @@ class _MasikJamaScreenState extends State<MasikJamaScreen> {
           if (_lastWhatsappMsg.isNotEmpty)
             IconButton(
               icon: const Icon(Icons.chat),
-              tooltip: 'WhatsApp मैसेज देखें',
+              tooltip: 'WhatsApp मैसेज',
               onPressed: () => _showWhatsappDialog(_lastWhatsappMsg),
             ),
         ],
@@ -398,220 +345,186 @@ class _MasikJamaScreenState extends State<MasikJamaScreen> {
       body: ListView(
         padding: const EdgeInsets.all(12),
         children: [
-          // ---- 1. जमा दिनांक ----
-          AppCard(
-            child: Row(
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'जमा दिनांक',
-                        style: TextStyle(fontSize: 12, color: C.text2, fontWeight: FontWeight.w600),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        _fmtDate(jamaDate),
-                        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: C.text),
-                      ),
-                    ],
-                  ),
-                ),
-                OutlinedButton.icon(
-                  onPressed: _pickJamaDate,
-                  icon: const Icon(Icons.calendar_today, size: 18),
-                  label: const Text('दिनांक बदलें'),
-                ),
-              ],
+          if (s.canEdit) ...[
+            AppCard(
+              child: DateField(
+                label: 'जमा दिनांक',
+                value: jamaDate,
+                onChanged: (d) => setState(() => jamaDate = d),
+              ),
             ),
-          ),
+            sectionTitle('सदस्य सूची'),
+            for (final m in s.members)
+              Builder(
+                builder: (context) {
+                  final keys = _applicableMonthKeys(m);
+                  final selSet = _selectedMonthKeys[m.id]!;
+                  final advCtrl = _advanceCtrls[m.id]!;
+                  final advAmt = num0(advCtrl.text);
+                  final autoNext = _autoAdvanceMonths(m.id, advAmt);
+                  final rowTotal = _memberSelectedTotal(m);
 
-          // ---- 2. सभी सदस्यों की सूची + चेकबॉक्स + एडवांस बॉक्स ----
-          const Padding(
-            padding: EdgeInsets.symmetric(vertical: 6),
-            child: Text(
-              'सदस्य सूची (बकाया / वर्तमान माह व एडवांस)',
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: C.text),
-            ),
-          ),
-
-          for (final m in s.members) ...[
-            Builder(
-              builder: (context) {
-                final keys = _pendingMonthKeysForMember(m.id);
-                final selSet = _selectedMonths[m.id]!;
-                final advCtrl = _advanceCtrls[m.id]!;
-                final advAmt = num0(advCtrl.text);
-                final autoNext = _autoNextMonthsFromAdvance(m.id, advAmt);
-                final rowTotal = _memberTotalPaidForRow(m);
-
-                return AppCard(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              m.name,
-                              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: C.text),
+                  return AppCard(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                m.name,
+                                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: C.text),
+                              ),
                             ),
-                          ),
-                          Text(
-                            rs(rowTotal),
-                            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: C.primary),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-
-                      // Checkboxes (केवल बकाया / वर्तमान माह के लिए)
-                      Wrap(
-                        spacing: 6,
-                        runSpacing: 4,
-                        children: [
-                          for (final mk in keys)
-                            FilterChip(
-                              label: Text('${mk.shortLabel()} (${rs(_fee)})'),
-                              selected: selSet.contains(mk),
-                              onSelected: (checked) {
-                                setState(() {
-                                  if (checked) {
-                                    selSet.add(mk);
-                                  } else {
-                                    selSet.remove(mk);
-                                  }
-                                });
-                              },
+                            Text(
+                              rs(rowTotal),
+                              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: C.primary),
                             ),
-                        ],
-                      ),
-                      const SizedBox(height: 10),
-
-                      // Advance Text Box
-                      TextFormField(
-                        controller: advCtrl,
-                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                        inputFormatters: [
-                          FilteringTextInputFormatter.allow(RegExp(r'^\d*\.?\d{0,2}')),
-                        ],
-                        decoration: const InputDecoration(
-                          labelText: 'एडवांस राशि (₹) — अगले माह में स्वतः पेड',
-                          hintText: '0',
+                          ],
                         ),
-                        onChanged: (_) => setState(() {}),
-                      ),
-
-                      if (autoNext.isNotEmpty) ...[
-                        const SizedBox(height: 6),
-                        Text(
-                          'स्वतः अगले माह पेड: ${autoNext.map((e) => e.shortLabel()).join(', ')}',
-                          style: const TextStyle(
-                            fontSize: 12,
-                            color: C.primary,
-                            fontWeight: FontWeight.w600,
+                        const SizedBox(height: 8),
+                        Wrap(
+                          spacing: 6,
+                          runSpacing: 4,
+                          children: [
+                            for (final mk in keys)
+                              FilterChip(
+                                label: Text('${_label(mk)} (${rs(_perMonth)})'),
+                                selected: selSet.contains(mk),
+                                onSelected: (on) {
+                                  setState(() {
+                                    if (on) {
+                                      selSet.add(mk);
+                                    } else {
+                                      selSet.remove(mk);
+                                    }
+                                  });
+                                },
+                              ),
+                          ],
+                        ),
+                        const SizedBox(height: 10),
+                        TextFormField(
+                          controller: advCtrl,
+                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                          inputFormatters: [
+                            FilteringTextInputFormatter.allow(RegExp(r'^\d*\.?\d{0,2}')),
+                          ],
+                          decoration: const InputDecoration(
+                            labelText: 'एडवांस राशि (₹) — स्वतः अगले माह में जुड़ेगा',
+                            hintText: '0',
                           ),
+                          onChanged: (_) => setState(() {}),
+                        ),
+                        if (autoNext.isNotEmpty) ...[
+                          const SizedBox(height: 6),
+                          Text(
+                            'स्वतः अगले माह पेड: ${autoNext.map(_label).join(', ')}',
+                            style: const TextStyle(fontSize: 12, color: C.ok, fontWeight: FontWeight.w600),
+                          ),
+                        ],
+                      ],
+                    ),
+                  );
+                },
+              ),
+            const SizedBox(height: 6),
+            btn('जमा सेव करें व WhatsApp मैसेज बनाएँ', _saveAll, icon: Icons.save),
+            if (_lastWhatsappMsg.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              AppCard(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    const Text(
+                      'तैयार WhatsApp मैसेज',
+                      style: TextStyle(fontWeight: FontWeight.bold, color: C.primary),
+                    ),
+                    const SizedBox(height: 6),
+                    SelectableText(_lastWhatsappMsg),
+                    const SizedBox(height: 8),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: [
+                        TextButton(
+                          onPressed: () async {
+                            await Clipboard.setData(ClipboardData(text: _lastWhatsappMsg));
+                            if (mounted) toast(context, 'मैसेज कॉपी हो गया');
+                          },
+                          child: const Text('कॉपी'),
+                        ),
+                        ElevatedButton.icon(
+                          onPressed: () => _openWhatsapp(_lastWhatsappMsg),
+                          icon: const Icon(Icons.send, size: 16),
+                          label: const Text('WhatsApp भेजें'),
                         ),
                       ],
-                    ],
-                  ),
-                );
-              },
-            ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ],
-
-          const SizedBox(height: 6),
-          btn('जमा सेव करें व WhatsApp मैसेज बनाएँ', _saveAll, icon: Icons.save),
-
-          if (_lastWhatsappMsg.isNotEmpty) ...[
-            const SizedBox(height: 10),
+          sectionTitle('सदस्यवार स्थिति'),
+          for (final m in s.members)
             AppCard(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
+              child: Row(
                 children: [
-                  const Text(
-                    'तैयार WhatsApp मैसेज',
-                    style: TextStyle(fontWeight: FontWeight.bold, color: C.primary),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(m.name, style: const TextStyle(fontWeight: FontWeight.bold, color: C.text)),
+                        Text(
+                          'अंतिम जमा महीना: ${fe.lastPaidMonth(m.id) == null ? '-' : _label(fe.lastPaidMonth(m.id)!)}',
+                          style: const TextStyle(fontSize: 12, color: C.text2),
+                        ),
+                      ],
+                    ),
                   ),
-                  const SizedBox(height: 6),
-                  SelectableText(_lastWhatsappMsg),
-                  const SizedBox(height: 8),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
                     children: [
-                      TextButton(
-                        onPressed: () async {
-                          await Clipboard.setData(ClipboardData(text: _lastWhatsappMsg));
-                          if (mounted) toast(context, 'मैसेज कॉपी हो गया');
-                        },
-                        child: const Text('कॉपी'),
-                      ),
-                      ElevatedButton.icon(
-                        onPressed: () => _openWhatsapp(_lastWhatsappMsg),
-                        icon: const Icon(Icons.send, size: 16),
-                        label: const Text('WhatsApp'),
-                      ),
+                      Text(rs(fe.memberJama(m.id)), style: const TextStyle(fontWeight: FontWeight.bold, color: C.text)),
+                      if (fe.advanceMonths(m.id) > 0)
+                        Text('एडवांस ${fe.advanceMonths(m.id)} माह', style: const TextStyle(fontSize: 12, color: C.ok)),
                     ],
                   ),
                 ],
               ),
             ),
-          ],
-
-          // ---- 3. मासिक जमा सूची (Edit & Delete) ----
-          const Padding(
-            padding: EdgeInsets.only(top: 14, bottom: 6),
-            child: Text(
-              'मासिक जमा सूची',
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: C.text),
-            ),
-          ),
-
-          if (depositsList.isEmpty)
-            const Padding(
-              padding: EdgeInsets.all(10),
-              child: Text('अभी कोई जमा एंट्री नहीं है', style: TextStyle(color: C.text2)),
-            )
-          else
-            for (final entry in depositsList)
-              AppCard(
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            '${s.memberById(entry.memberId)?.name ?? 'सदस्य'}  •  ${rs(entry.amount)}',
-                            style: const TextStyle(fontWeight: FontWeight.bold, color: C.text),
-                          ),
-                          const SizedBox(height: 2),
-                          Text(
-                            'दिनांक: ${_fmtDate(entry.date)}  •  माह: ${_MonthKey(entry.monthDate.year, entry.monthDate.month).shortLabel()}',
-                            style: const TextStyle(fontSize: 12, color: C.text2),
-                          ),
-                          if (entry.note.isNotEmpty)
-                            Text(
-                              entry.note,
-                              style: const TextStyle(fontSize: 12, color: C.primary),
-                            ),
-                        ],
-                      ),
+          sectionTitle('जमा रजिस्टर'),
+          for (final j in recent)
+            AppCard(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      '${s.memberById(j.memberId)?.name ?? ''} • ${_label(j.month)}\n${dt(j.date)}',
+                      style: const TextStyle(color: C.text),
                     ),
-                    if (s.canEdit) ...[
-                      IconButton(
-                        icon: const Icon(Icons.edit, size: 20, color: C.accent),
-                        onPressed: () => _editDepositEntry(entry),
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.delete, size: 20, color: C.error),
-                        onPressed: () => _deleteDepositEntry(entry),
-                      ),
-                    ],
+                  ),
+                  Text(rs(j.amount), style: const TextStyle(fontWeight: FontWeight.bold, color: C.ok)),
+                  if (s.canEdit) ...[
+                    IconButton(
+                      icon: const Icon(Icons.edit, color: C.accent),
+                      onPressed: () => _editJama(j),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.delete, color: C.error),
+                      onPressed: () async {
+                        if (await confirm(context, 'यह जमा हटाएँ?')) {
+                          s.jama.remove(j);
+                          await s.save();
+                          if (mounted) setState(() {});
+                        }
+                      },
+                    ),
                   ],
-                ),
+                ],
               ),
+            ),
         ],
       ),
     );
